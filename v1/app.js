@@ -31,8 +31,8 @@ const els = {
   statusLog: document.querySelector("#statusLog"),
 };
 
-const pdfjsLib = await import("./vendor/pdf.min.mjs?v=1.1");
-pdfjsLib.GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs?v=1.1";
+const pdfjsLib = await import("./vendor/pdf.min.mjs?v=a81f530");
+pdfjsLib.GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs?v=a81f530";
 
 function log(message, level = "INFO") {
   const line = `${new Date().toISOString()} [${level}] ${message}`;
