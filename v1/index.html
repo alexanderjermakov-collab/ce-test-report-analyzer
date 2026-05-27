@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CE Test Report Analyzer v1.0</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs" type="module"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="title-window">
+        <div>
+          <p class="eyebrow">Sharp TV EU Safety Compliance</p>
+          <h1>CE Test Report Analyzer</h1>
+        </div>
+        <dl class="meta-grid" aria-label="Application metadata">
+          <div>
+            <dt>Version</dt>
+            <dd>1.0</dd>
+          </div>
+          <div>
+            <dt>Released</dt>
+            <dd>2026-05-26</dd>
+          </div>
+          <div>
+            <dt>Author</dt>
+            <dd>Alex Jermakov</dd>
+          </div>
+        </dl>
+      </header>
+
+      <section class="workspace" aria-label="Analyzer workspace">
+        <div class="input-column">
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>CETR files</h2>
+              <span>PDF, multiple files</span>
+            </div>
+            <label class="drop-zone" id="pdfDropZone">
+              <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple />
+              <span class="drop-icon" aria-hidden="true">PDF</span>
+              <strong>Drop CE test reports here</strong>
+              <small>or choose PDF files</small>
+            </label>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>CST file</h2>
+              <span>XLSX workbook</span>
+            </div>
+            <label class="drop-zone" id="cstDropZone">
+              <input id="cstInput" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+              <span class="drop-icon" aria-hidden="true">XLSX</span>
+              <strong>Drop Certification Status Table here</strong>
+              <small>or choose workbook</small>
+            </label>
+          </section>
+        </div>
+
+        <div class="output-column">
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>Loaded CETR files</h2>
+              <span id="pdfCount">0 files</span>
+            </div>
+            <ul class="file-list" id="pdfList" aria-live="polite"></ul>
+          </section>
+
+          <section class="panel compact-panel">
+            <div class="panel-heading">
+              <h2>Loaded CST file</h2>
+              <span id="cstState">Not selected</span>
+            </div>
+            <div class="single-file" id="cstFileName">No workbook loaded</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>Analysis Summary file</h2>
+              <span id="asfState">Waiting</span>
+            </div>
+            <div class="artifact-box" id="asfInfo">Run analysis to generate XLSX output.</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>LOG file</h2>
+              <span id="logState">Ready</span>
+            </div>
+            <div class="artifact-box" id="logInfo">Technical log will be generated during analysis.</div>
+          </section>
+        </div>
+      </section>
+
+      <footer class="action-bar">
+        <div class="progress-wrap" aria-label="Analysis progress">
+          <progress id="progressBar" value="0" max="100"></progress>
+          <span id="progressText">Idle</span>
+        </div>
+        <div class="button-row">
+          <button id="analyzeButton" type="button">Analyze</button>
+          <button id="downloadSummaryButton" type="button" disabled>Download Analyze Summary</button>
+          <button id="downloadLogButton" type="button" disabled>Download Log</button>
+        </div>
+        <section class="status-window" aria-live="polite">
+          <h2>Status and debug messages</h2>
+          <pre id="statusLog">Application initialized.</pre>
+        </section>
+      </footer>
+    </main>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
