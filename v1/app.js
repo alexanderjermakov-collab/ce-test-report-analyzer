@@ -1,5 +1,5 @@
 const APP_NAME = "CE Test Report Analyzer";
-const APP_VERSION = "1.0";
+const APP_VERSION = "1.1";
 const APP_AUTHOR = "Alex Jermakov";
 
 const state = {
@@ -31,8 +31,8 @@ const els = {
   statusLog: document.querySelector("#statusLog"),
 };
 
-const pdfjsLib = await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs");
-pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+const pdfjsLib = await import("./vendor/pdf.min.mjs");
+pdfjsLib.GlobalWorkerOptions.workerSrc = "./vendor/pdf.worker.min.mjs";
 
 function log(message, level = "INFO") {
   const line = `${new Date().toISOString()} [${level}] ${message}`;
@@ -152,6 +152,19 @@ function matchFirst(text, patterns, fallback = "") {
   return fallback;
 }
 
+function normalizeModelId(value) {
+  return cleanText(String(value || ""))
+    .toUpperCase()
+    .replace(/\s*-\s*/g, "-")
+    .replace(/[^A-Z0-9-]/g, "");
+}
+
+function extractModelTokens(value) {
+  const text = cleanText(String(value || ""));
+  const candidates = text.match(/\b(?:[124]T-C|PR|M[HU]DV|MSDV|LD|F|LT-?)[A-Z0-9xX_-]{5,32}\b/g) || [];
+  return [...new Set(candidates.map(normalizeModelId).filter((item) => item.length >= 5 && !item.includes("*")))];
+}
+
 function extractListNearLabel(text, labels) {
   for (const label of labels) {
     const stop = [
@@ -209,7 +222,7 @@ function inferStandards(text) {
 
 function analyzeReport(file, rawText) {
   const text = cleanText(rawText);
-  const conclusion = /\bfail(?:ed|ure)?\b/i.test(text)
+  const conclusion = /\b(does not meet the requirement|not complied|not comply|test result\s*:\s*fail|conclusion\s*:\s*fail|failed)\b/i.test(text)
     ? "FAIL"
     : /\b(pass(?:ed)?|complied|met the requirement|does meet the requirement)\b/i.test(text)
       ? "PASS"
@@ -227,7 +240,7 @@ function analyzeReport(file, rawText) {
       /(?:test laboratory|testing laboratory|laboratory|test lab)\s*[:\-]?\s*([^:]{3,120}?)(?=\s(?:applicant|manufacturer|report|standard|test))/i,
     ]),
     applicant: matchFirst(text, [
-      /(?:applicant(?:’s name|'s name)?|applicant name & address|client)\s*[:\-]?\s*([^:]{3,140}?)(?=\s(?:MTC Industry|address|manufacturer|sample|test|standard|model|report|product))/i,
+      /(?:applicant(?:’s name|'s name)?|applicant name & address|applicant|client)\s*[:\-]?\s*([^:]{3,140}?)(?=\s(?:MTC Industry|address|manufacturer|sample|test|standard|model|report|product))/i,
     ]),
     standard: inferStandards(text) || matchFirst(text, [
       /(?:standard|test standard|used standard)\s*[:\-]?\s*((?:EN|IEC|BS EN|ETSI)\s*[0-9][A-Z0-9:./\- ]{3,80})/i,
@@ -350,23 +363,45 @@ function searchableCstText(record) {
     .toLowerCase();
 }
 
+function cstRecordModelTokens(record) {
+  return [
+    ...extractModelTokens(record.factoryModel),
+    ...extractModelTokens(record.model),
+    ...extractModelTokens(record.ftp),
+  ];
+}
+
+function cstRecordMatchesModel(record, modelName) {
+  const needle = normalizeModelId(modelName);
+  if (!needle) return false;
+  const tokens = cstRecordModelTokens(record);
+  if (tokens.includes(needle)) return true;
+
+  const searchable = searchableCstText(record);
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(searchable);
+}
+
 function findModelInCst(workbook, modelName) {
-  const needle = modelName.toLowerCase();
   const matches = [];
   for (const sheetName of workbook.SheetNames) {
     const rows = sheetRows(workbook, sheetName);
     if (!rows.length) continue;
     const records = sheetLooksTransposed(rows) ? transposedSheetRecords(rows, sheetName) : rowSheetRecords(rows, sheetName);
     records.forEach((record) => {
-      if (searchableCstText(record).includes(needle)) matches.push(record);
+      if (cstRecordMatchesModel(record, modelName)) matches.push(record);
     });
   }
   return matches;
 }
 
-function buildSummaryWorkbook(reports, cstFileName) {
+async function buildSummaryWorkbook(reports, cstFileName) {
   const executedAt = new Date();
-  const wb = XLSX.utils.book_new();
+  const wb = new window.ExcelJS.Workbook();
+  wb.creator = APP_AUTHOR;
+  wb.created = executedAt;
+  wb.modified = executedAt;
+  const generalConclusion = reports.every((report) => report.analysisConclusion === "PASS") ? "PASS" : "FAIL";
   const titleRows = [
     [APP_NAME],
     ["Application version", APP_VERSION],
@@ -375,36 +410,58 @@ function buildSummaryWorkbook(reports, cstFileName) {
     ["Functionality", "Analyzes CE Test Report PDF files and checks TV model synchronization against all worksheets in a CST workbook."],
     ["CETR file names", reports.map((report) => report.fileName).join("; ")],
     ["CST file name", cstFileName],
+    ["General analysis conclusion", generalConclusion],
     [],
   ];
 
-  const summaryRows = reports.map((report) => ({
-    "CETR File name": report.fileName,
-    "Testing date": report.testingDate,
-    "Test Laboratory name": report.laboratory,
-    "Applicant company name": report.applicant,
-    "Used test standard name": report.standard,
-    "Test conclusion": report.conclusion,
-    "Tested TV samples model names": report.models.join("; "),
-    "Tested TV samples brand names": report.brands.join("; "),
-    "CST worksheet names where models were found": [...new Set(report.cstMatches.map((match) => match.sheetName))].join("; "),
-    "AMTC factory model name": [...new Set(report.cstMatches.map((match) => match.factoryModel).filter(Boolean))].join("; "),
-    "SCE TV Brand": [...new Set(report.cstMatches.map((match) => match.brand).filter(Boolean))].join("; "),
-    "SCE Model Name": [...new Set(report.cstMatches.map((match) => match.model).filter(Boolean))].join("; "),
-    "FTP storage folder": [...new Set(report.cstMatches.map((match) => match.ftp).filter(Boolean))].join("; "),
-    "TV project name": [...new Set(report.cstMatches.map((match) => match.project).filter(Boolean))].join("; "),
-    "TV model names missing in CETR": report.modelsMissingInCetr.join("; "),
-    "Models not found in CST": report.modelsNotFoundInCst.join("; "),
-  }));
-
-  const ws = XLSX.utils.aoa_to_sheet(titleRows);
-  XLSX.utils.sheet_add_json(ws, summaryRows, { origin: `A${titleRows.length + 1}` });
-  ws["!cols"] = [
-    { wch: 34 }, { wch: 18 }, { wch: 28 }, { wch: 28 }, { wch: 24 }, { wch: 14 },
-    { wch: 42 }, { wch: 30 }, { wch: 34 }, { wch: 26 }, { wch: 22 }, { wch: 28 },
-    { wch: 30 }, { wch: 24 }, { wch: 34 }, { wch: 34 },
+  const summaryHeaders = [
+    "CETR File name",
+    "Test conclusion",
+    "Tested TV samples model names",
+    "Tested TV samples brand names",
+    "Analysis of discrepancies with CST TV model names",
+    "Conclusion on the analysis",
+    "CST worksheet names where models were found",
+    "AMTC factory model name",
+    "SCE TV Brand",
+    "SCE Model Name",
+    "FTP storage folder",
+    "TV project name",
+    "Test Laboratory name",
+    "Applicant company name",
+    "Used test standard name",
+    "Testing date",
   ];
-  XLSX.utils.book_append_sheet(wb, ws, "Analysis Summary");
+
+  const ws = wb.addWorksheet("Analysis Summary", {
+    views: [{ state: "frozen", ySplit: titleRows.length + 1 }],
+  });
+  titleRows.forEach((row) => ws.addRow(row));
+  ws.addRow(summaryHeaders);
+  reports.forEach((report) => {
+    const discrepancyText = [
+      report.modelsMissingInCetr.length ? `CST model names missing in CETR: ${report.modelsMissingInCetr.join("; ")}` : "No CST model names missing in CETR",
+      report.modelsNotFoundInCst.length ? `CETR model names not found in CST: ${report.modelsNotFoundInCst.join("; ")}` : "All detected CETR model names found in CST",
+    ].join("\n");
+    ws.addRow([
+      report.fileName,
+      report.conclusion || "UNKNOWN",
+      report.models.join("; "),
+      report.brands.join("; "),
+      discrepancyText,
+      report.analysisConclusion,
+      [...new Set(report.cstMatches.map((match) => match.sheetName))].join("; "),
+      [...new Set(report.cstMatches.map((match) => match.factoryModel).filter(Boolean))].join("; "),
+      [...new Set(report.cstMatches.map((match) => match.brand).filter(Boolean))].join("; "),
+      [...new Set(report.cstMatches.map((match) => match.model).filter(Boolean))].join("; "),
+      [...new Set(report.cstMatches.map((match) => match.ftp).filter(Boolean))].join("; "),
+      [...new Set(report.cstMatches.map((match) => match.project).filter(Boolean))].join("; "),
+      report.laboratory,
+      report.applicant,
+      report.standard,
+      report.testingDate,
+    ]);
+  });
 
   const detailRows = [];
   reports.forEach((report) => {
@@ -422,29 +479,127 @@ function buildSummaryWorkbook(reports, cstFileName) {
       });
     });
   });
-  const detailsWs = XLSX.utils.json_to_sheet(detailRows.length ? detailRows : [{ "Result": "No CST matches found" }]);
-  detailsWs["!cols"] = [{ wch: 34 }, { wch: 24 }, { wch: 24 }, { wch: 28 }, { wch: 22 }, { wch: 28 }, { wch: 30 }, { wch: 24 }, { wch: 90 }];
-  XLSX.utils.book_append_sheet(wb, detailsWs, "CST Match Details");
+  const detailsWs = wb.addWorksheet("CST Match Details", {
+    views: [{ state: "frozen", ySplit: 1 }],
+  });
+  const detailHeaders = [
+    "CETR File name",
+    "Matched model from CETR",
+    "CST worksheet",
+    "AMTC factory model name",
+    "SCE TV Brand",
+    "SCE Model Name",
+    "FTP storage folder",
+    "TV project name",
+    "Matched CST row",
+  ];
+  detailsWs.addRow(detailHeaders);
+  if (detailRows.length) {
+    detailRows.forEach((row) => detailsWs.addRow(detailHeaders.map((header) => row[header])));
+  } else {
+    detailsWs.addRow(["No CST matches found"]);
+  }
 
-  return XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  styleWorkbook(ws, detailsWs, generalConclusion);
+  return wb.xlsx.writeBuffer();
+}
+
+function applyCellBaseStyle(cell) {
+  cell.font = { name: "Arial", size: 12 };
+  cell.alignment = { vertical: "top", horizontal: "left", wrapText: true };
+  cell.border = {
+    top: { style: "thin", color: { argb: "FFD9D9D9" } },
+    left: { style: "thin", color: { argb: "FFD9D9D9" } },
+    bottom: { style: "thin", color: { argb: "FFD9D9D9" } },
+    right: { style: "thin", color: { argb: "FFD9D9D9" } },
+  };
+}
+
+function styleHeaderRow(row) {
+  row.eachCell((cell) => {
+    applyCellBaseStyle(cell);
+    cell.font = { name: "Arial", size: 12, bold: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAD3" } };
+  });
+  row.height = 30;
+}
+
+function styleWorkbook(summarySheet, detailsSheet, generalConclusion) {
+  const summaryWidths = [34, 15, 43, 31, 50, 18, 35, 27, 23, 29, 31, 25, 30, 30, 43, 18];
+  summaryWidths.forEach((width, index) => {
+    summarySheet.getColumn(index + 1).width = width;
+  });
+  detailsSheet.columns = [
+    { width: 35 }, { width: 25 }, { width: 24 }, { width: 29 }, { width: 23 },
+    { width: 29 }, { width: 31 }, { width: 25 }, { width: 91 },
+  ];
+
+  summarySheet.getCell("A1").font = { name: "Arial", size: 18, bold: true };
+  summarySheet.getRow(1).height = 23;
+  for (let rowIndex = 2; rowIndex <= 8; rowIndex += 1) {
+    const label = summarySheet.getCell(rowIndex, 1);
+    const value = summarySheet.getCell(rowIndex, 2);
+    applyCellBaseStyle(label);
+    applyCellBaseStyle(value);
+    label.font = { name: "Arial", size: 12, bold: true };
+    label.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAD3" } };
+    if (rowIndex === 6) summarySheet.getRow(rowIndex).height = 120;
+    if (rowIndex === 8) {
+      value.font = { name: "Arial", size: 12, bold: true, color: { argb: generalConclusion === "PASS" ? "FF008000" : "FFC00000" } };
+    }
+  }
+  styleHeaderRow(summarySheet.getRow(10));
+  summarySheet.eachRow((row, rowIndex) => {
+    if (rowIndex <= 10) return;
+    row.eachCell((cell) => applyCellBaseStyle(cell));
+    const testConclusion = summarySheet.getCell(rowIndex, 2);
+    const analysisConclusion = summarySheet.getCell(rowIndex, 6);
+    [testConclusion, analysisConclusion].forEach((cell) => {
+      cell.font = {
+        name: "Arial",
+        size: 12,
+        bold: true,
+        color: { argb: cell.value === "PASS" ? "FF008000" : "FFC00000" },
+      };
+    });
+  });
+  summarySheet.autoFilter = { from: "A10", to: "P10" };
+
+  styleHeaderRow(detailsSheet.getRow(1));
+  detailsSheet.eachRow((row, rowIndex) => {
+    if (rowIndex === 1) return;
+    row.eachCell((cell) => applyCellBaseStyle(cell));
+  });
+  detailsSheet.autoFilter = { from: "A1", to: "I1" };
 }
 
 function collectCstModelsForReport(matches) {
   const values = new Set();
   matches.forEach((match) => {
-    [match.factoryModel, match.model].forEach((value) => {
-      splitNames(String(value || "")).forEach((item) => values.add(item));
-    });
+    splitNames(String(match.model || "")).forEach((item) => values.add(item));
   });
   return [...values];
 }
 
 function isModelRepresented(model, reportModels) {
-  const normalized = model.toLowerCase();
-  return reportModels.some((reportModel) => {
-    const candidate = reportModel.toLowerCase();
-    return candidate.includes(normalized) || normalized.includes(candidate);
+  const normalized = normalizeModelId(model);
+  return reportModels.some((reportModel) => normalizeModelId(reportModel) === normalized);
+}
+
+function uniqueMatches(matches) {
+  const keyed = new Map();
+  matches.forEach((match) => {
+    const key = [match.sourceModel, match.sheetName, match.factoryModel, match.model, match.ftp, match.project].join("|");
+    keyed.set(key, match);
   });
+  return [...keyed.values()];
+}
+
+function determineAnalysisConclusion(report) {
+  if (!report.cstMatches.length) return "FAIL";
+  if (report.modelsMissingInCetr.length) return "FAIL";
+  if (report.modelsNotFoundInCst.length) return "FAIL";
+  return "PASS";
 }
 
 async function runAnalysis() {
@@ -456,8 +611,8 @@ async function runAnalysis() {
     log("Please load one CST workbook before analysis.", "ERROR");
     return;
   }
-  if (!window.XLSX) {
-    log("XLSX library is unavailable. Check network access to the CDN.", "ERROR");
+  if (!window.XLSX || !window.ExcelJS) {
+    log("Spreadsheet libraries are unavailable. Check network access to the CDN.", "ERROR");
     return;
   }
 
@@ -491,15 +646,16 @@ async function runAnalysis() {
         }
         matches.forEach((match) => cstMatches.push({ ...match, sourceModel: model }));
       });
-      report.cstMatches = cstMatches;
+      report.cstMatches = uniqueMatches(cstMatches);
       report.modelsNotFoundInCst = modelsNotFoundInCst;
-      report.modelsMissingInCetr = collectCstModelsForReport(cstMatches).filter((model) => !isModelRepresented(model, report.models));
+      report.modelsMissingInCetr = collectCstModelsForReport(report.cstMatches).filter((model) => !isModelRepresented(model, report.models));
+      report.analysisConclusion = determineAnalysisConclusion(report);
       reports.push(report);
-      log(`Matched ${cstMatches.length} CST row(s) for ${file.name}.`);
+      log(`Matched ${report.cstMatches.length} CST row(s) for ${file.name}. Analysis conclusion: ${report.analysisConclusion}.`);
     }
 
     setProgress(82, "Building XLSX output");
-    const workbookArray = buildSummaryWorkbook(reports, state.cstFile.name);
+    const workbookArray = await buildSummaryWorkbook(reports, state.cstFile.name);
     state.summaryBlob = new Blob([workbookArray], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     state.logBlob = new Blob([state.logs.join("\n")], { type: "text/plain;charset=utf-8" });
 
@@ -546,3 +702,4 @@ els.downloadLogButton.addEventListener("click", () => {
 
 renderFileState();
 log(`${APP_NAME} v${APP_VERSION} loaded.`);
+log(`Libraries ready: PDF.js ${pdfjsLib ? "yes" : "no"}, XLSX ${window.XLSX ? "yes" : "no"}, ExcelJS ${window.ExcelJS ? "yes" : "no"}.`);
